@@ -1,0 +1,18 @@
+[Unit]
+Description=Nonthaburi alarm -> Web Push bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# adjust paths to where you cloned this
+WorkingDirectory=/opt/alarm-push
+EnvironmentFile=/opt/alarm-push/.env
+ExecStart=/opt/alarm-push/.venv/bin/python /opt/alarm-push/main.py
+Restart=always
+RestartSec=5
+# DATA_DIR must be writable by this user (vapid key + subscriptions live there)
+StateDirectory=alarm-push
+
+[Install]
+WantedBy=multi-user.target

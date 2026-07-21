@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+subscriptions.json
+vapid_private.pem
