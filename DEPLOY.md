@@ -28,10 +28,12 @@ This builds the image fresh each deploy and (re)starts the `pushbridge` containe
 to Kong's `kongapi_default` network with no host port published — `deploy.sh` does exactly
 this after `git pull`.
 
-> **State lives outside the image.** `/var/lib/pushbridge` is **bind-mounted** (not a named
-> volume) so `vapid_private.pem` and `subscriptions.json` survive every rebuild. Losing
-> the VAPID key invalidates **every existing browser subscription** — back this directory
-> up.
+> **State lives outside the image.** The host directory `/opt/pushbridge-data` is
+> **bind-mounted** (not a named volume) to `/var/lib/pushbridge` inside the container, so
+> `vapid_private.pem` and `subscriptions.json` survive every rebuild — and, kept outside
+> `/opt/pushbridge` (the git checkout), can't be swept up by a `git clean` or a fresh
+> clone. Losing the VAPID key invalidates **every existing browser subscription** — back
+> this directory up.
 
 ## 2. Kong route
 ```bash

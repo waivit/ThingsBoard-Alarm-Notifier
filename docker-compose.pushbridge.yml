@@ -12,8 +12,9 @@ services:
       DATA_DIR: /var/lib/pushbridge
     volumes:
       # Bind mount, not a named volume: the VAPID key and subscriptions must outlive
-      # every rebuild, or all existing browser subscriptions are invalidated.
-      - /var/lib/pushbridge:/var/lib/pushbridge
+      # every rebuild, or all existing browser subscriptions are invalidated. Kept
+      # outside /opt/pushbridge (the git checkout) so it can't get swept up by git.
+      - /opt/pushbridge-data:/var/lib/pushbridge
     networks:
       - kong
 
