@@ -98,6 +98,9 @@ so the PWA's calls need no CORS handling. Pushing to `main` triggers the GitHub 
 workflow in [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which pulls and
 rebuilds the container automatically.
 
+[DEPLOY_SERVICE.md](DEPLOY_SERVICE.md) covers the Docker-free alternative — a virtualenv
+supervised by systemd. It is manual: the pipeline only ever drives the container.
+
 ## Project structure
 
 ```
@@ -106,6 +109,8 @@ requirements.txt              Python dependencies
 Dockerfile                    python:3.13-slim + gunicorn (single worker)
 docker-compose.pushbridge.yml Container on Kong's network, state bind-mounted
 deploy.sh                     Pull + rebuild, run on the host by the deploy workflow
-pushbridge.service            systemd unit — alternative for hosts without Docker
+DEPLOY.md                     Production deploy (Docker) — the path CI/CD drives
+DEPLOY_SERVICE.md             Production deploy (systemd + venv), manual
+pushbridge.service            systemd unit for the Docker-free path
 .env.example                  All configuration, documented
 ```

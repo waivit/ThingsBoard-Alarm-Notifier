@@ -1,10 +1,14 @@
-# Deploy — pushbridge
+# Deploy (Docker) — pushbridge
 
 Flask backend served **same-origin** as ThingsBoard at `nonthaburi.info/pwa_push` (its own
 Kong service). Same-origin means the PWA's `/pwa_push/...` calls hit this service without
 **CORS** and without a second domain. The container is **not published to the host** —
 Kong reaches it over the internal Docker network (`kongapi_default`), so the push backend
 is never exposed outside Kong.
+
+This is the supported deploy path and the one the CI/CD pipeline drives. For a host
+without Docker, see [DEPLOY_SERVICE.md](DEPLOY_SERVICE.md) — that path is manual, with no
+auto-deploy.
 
 ## 1. Build & serve (Docker)
 The host runs everything in Docker — no Python/venv needed on the host at all. The
@@ -79,28 +83,6 @@ curl -s https://nonthaburi.info/pwa_push/vapid-public-key  # base64url app serve
 - Trigger a new alarm in ThingsBoard → push arrives within `POLL_SECONDS` even with the
   PWA closed (Android always; iOS 16.4+ only when installed to the home screen).
 
-## Migrating from the old `alarm-push` setup
-The host previously ran this under systemd + a venv, as `alarm-push`. Do all of this
-**before** the first deploy — especially the `/var/lib` move, which carries the VAPID key
-and the existing subscriptions:
-
-```bash
-sudo systemctl disable --now alarm-push        # or the two copies both poll and both push
-sudo mv /var/lib/alarm-push /var/lib/pushbridge
-sudo mv /opt/alarm-push /opt/pushbridge
-```
-
-Then repoint Kong at the container instead of the old host-port upstream, renaming the
-service in the same call (the route is attached to the service, so it follows along):
-
-```bash
-curl -s -X PATCH $ADMIN/services/alarm-push \
-  -d name=pushbridge -d url=http://pushbridge:7082
-```
-
-[pushbridge.service](pushbridge.service) is kept in the repo as an alternative for hosts
-without Docker; it is **not** used by this deploy path.
-
 ## Notes
 - HTTPS is mandatory for Web Push. `nonthaburi.info` already has TLS (Kong), so serving
   under it satisfies this.
@@ -110,3 +92,6 @@ without Docker; it is **not** used by this deploy path.
   pre-existing alarms; only alarms created afterward push.
 - The PWA (`../dashboard-pwa`) must be deployed and routed at `/pwa_app` for the
   notification toggle to have anything to subscribe from.
+- [pushbridge.service](pushbridge.service) and [DEPLOY_SERVICE.md](DEPLOY_SERVICE.md) are
+  the Docker-free alternative. They are **not** used by this path — `deploy.sh` and the
+  deploy workflow only ever drive the container.
