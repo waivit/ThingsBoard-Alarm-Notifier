@@ -1,5 +1,5 @@
 """
-alarm-push — ThingsBoard alarm → Web Push bridge for the Nonthaburi PWA.
+pushbridge — ThingsBoard alarm → Web Push bridge for the Nonthaburi PWA.
 
 Flow:
   1. The PWA (nonthaburi.info/pwa_app) subscribes to Web Push and POSTs its
@@ -10,7 +10,9 @@ Flow:
 Served behind Kong under /pwa_push (strip_path=true), so this app sees /register,
 /unregister, /vapid-public-key at the root.
 
-Run:  python main.py         (config via environment / .env — see .env.example)
+Run:  gunicorn --workers 1 --threads 4 main:app    (production, see Dockerfile)
+      python main.py                               (local development)
+Config via environment / .env — see .env.example.
 """
 from __future__ import annotations
 
@@ -241,12 +243,23 @@ def watcher_loop() -> None:
         time.sleep(POLL_SECONDS)
 
 
-def main() -> None:
+def start_watcher() -> None:
+    """Start the background alarm watcher. Called once per process, at import time."""
     if not TB_USER or not TB_PASS:
         raise SystemExit("TB_USER / TB_PASS must be set (see .env.example)")
     threading.Thread(target=watcher_loop, daemon=True).start()
-    print(f"[alarm-push] listening on {HOST}:{PORT}  (poll {POLL_SECONDS}s)")
-    app.run(host=HOST, port=PORT, threaded=True)
+
+
+# Started on import so the watcher also runs under a WSGI server (gunicorn), which
+# loads `main:app` directly and never calls main(). Safe only with a single worker —
+# see the Dockerfile.
+start_watcher()
+
+
+def main() -> None:
+    """Development entry point: the Flask built-in server instead of gunicorn."""
+    print(f"[pushbridge] listening on {HOST}:{PORT}  (poll {POLL_SECONDS}s)")
+    app.run(host=HOST, port=PORT, threaded=True, use_reloader=False)
 
 
 if __name__ == "__main__":

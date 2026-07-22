@@ -1,0 +1,23 @@
+services:
+  pushbridge:
+    build: .
+    container_name: pushbridge
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Bind to all interfaces inside the container — nothing is published to the
+      # host, so Kong on kongapi_default is still the only way in.
+      BIND_HOST: 0.0.0.0
+      PORT: 7082
+      DATA_DIR: /var/lib/pushbridge
+    volumes:
+      # Bind mount, not a named volume: the VAPID key and subscriptions must outlive
+      # every rebuild, or all existing browser subscriptions are invalidated.
+      - /var/lib/pushbridge:/var/lib/pushbridge
+    networks:
+      - kong
+
+networks:
+  kong:
+    external: true
+    name: kongapi_default

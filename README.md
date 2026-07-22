@@ -1,64 +1,111 @@
-# alarm-push
+# ThingsBoard Alarm Notifier
 
-ThingsBoard active-alarm → **Web Push** bridge for the Nonthaburi PWA. Polls
-`/api/v2/alarms` and pushes a notification to every subscribed browser when a **new**
-alarm appears — so the PWA alerts even when it's closed.
+**pushbridge** — a small Web Push backend that turns
+[ThingsBoard](https://thingsboard.io/) alarms into OS-level notifications on a phone. It's
+the companion service that lets the [PWA dashboard](../dashboard-pwa) alert its users even
+when the app is closed.
 
 ```
-PWA (/pwa_app) ──subscribe──► alarm-push ──poll──► ThingsBoard
+PWA (/pwa_app) ──subscribe──► pushbridge ──poll──► ThingsBoard
       ▲                            │
       └──────── Web Push ──────────┘  (via the browser's push service)
 ```
 
-## Setup (Ubuntu, same box as ThingsBoard)
+Built solo end-to-end: the push protocol plumbing, the ThingsBoard watcher, the container
+image, and the deploy pipeline.
+
+## What it does
+
+- **Hands out the VAPID application server key** the browser needs in order to subscribe.
+- **Stores push subscriptions** posted by the PWA, keyed by endpoint (one per browser
+  install), persisted to disk so they survive restarts.
+- **Polls ThingsBoard active alarms** on a fixed interval with a dedicated read-only user,
+  handling JWT login and token refresh transparently.
+- **Pushes a notification for every new alarm** — severity translated to Thai, with a deep
+  link into the PWA's alarm screen and the alarm id as the notification tag.
+- **Prunes dead subscriptions** automatically when a push service reports them expired
+  (404/410).
+
+## Why it's worth a look
+
+It's deliberately small, but it handles the parts of Web Push that are easy to get wrong:
+
+- **VAPID lifecycle done properly**: the keypair is generated on first run and persisted
+  outside the container image — because regenerating it silently invalidates *every*
+  existing subscription. The deploy is built around not losing that file.
+- **No duplicate notifications**: a watermark on `createdTime` means an alarm pushes
+  exactly once, and the first poll after a restart sets a baseline rather than replaying
+  every alarm that already existed.
+- **Single-worker by design, on purpose**: the watcher thread and subscription store are
+  in-process, so the container pins gunicorn to one worker — a constraint that is
+  documented rather than discovered in production.
+- **A watcher that cannot die**: poll failures are caught, the token is invalidated, and
+  the loop retries — a transient ThingsBoard outage doesn't take push down with it.
+- **Same-origin architecture by design**: served under the same domain and gateway as
+  ThingsBoard (`/pwa_push/...`), sidestepping CORS entirely instead of papering over it —
+  see [DEPLOY.md](DEPLOY.md).
+- **CI/CD included**: GitHub Actions lints and builds the image on every push/PR, and
+  auto-deploys to the production host over SSH on merge to `main`
+  (`.github/workflows/`, `deploy.sh`).
+
+## Tech stack
+
+| Layer | Choice |
+|---|---|
+| API | Flask 3, gunicorn (1 worker + threads) |
+| Push | `pywebpush` + `py-vapid` (VAPID / Web Push protocol) |
+| Backend | ThingsBoard REST API (external, not part of this repo) |
+| State | JSON file on a bind-mounted host directory |
+| Lint | ruff |
+| CI/CD | GitHub Actions → SSH deploy to a Docker + Kong host |
+
+## Getting started
 
 ```bash
-sudo mkdir -p /opt/alarm-push && sudo chown $USER /opt/alarm-push
-cp -r * /opt/alarm-push/ && cd /opt/alarm-push
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env         # then edit .env (TB_USER/TB_PASS at minimum)
+cp .env.example .env    # then edit .env (TB_USER/TB_PASS at minimum)
+python main.py          # http://127.0.0.1:7082
 ```
 
-Create a **dedicated ThingsBoard user** for the watcher (read access to alarms) and put
-its credentials in `.env`. The VAPID keypair is generated automatically on first run and
-saved to `DATA_DIR/vapid_private.pem` — **back it up**; regenerating it invalidates every
-existing subscription.
-
-### Run as a service
-```bash
-sudo cp alarm-push.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now alarm-push
-journalctl -u alarm-push -f
-```
-
-## Kong route (same-origin as the PWA)
-
-The PWA calls `/pwa_push/...` on `nonthaburi.info`. Route that prefix to this service and
-**strip the prefix** so the app sees `/register`, `/vapid-public-key`, `/unregister`:
+Create a **dedicated ThingsBoard user** for the watcher (read access to alarms) and put its
+credentials in `.env` — the app refuses to start without them. All configuration is
+environment-based; there is no config file. The VAPID keypair is generated on first run
+and saved to `DATA_DIR/vapid_private.pem` — **back it up**.
 
 ```bash
-# service → this backend
-curl -s -X POST http://localhost:8001/services \
-  -d name=alarm-push -d url=http://127.0.0.1:7082
-
-# route: nonthaburi.info/pwa_push/* → alarm-push (strip /pwa_push)
-curl -s -X POST http://localhost:8001/services/alarm-push/routes \
-  -d 'paths[]=/pwa_push' -d strip_path=true -d 'hosts[]=nonthaburi.info'
+ruff check .            # lint
+docker build -t pushbridge .
 ```
 
-## Endpoints (as seen by this app, after Kong strips the prefix)
+## Endpoints
+
+Paths are as this app sees them — Kong strips the `/pwa_push` prefix before forwarding.
+
 | method | path | purpose |
 | --- | --- | --- |
-| GET | `/vapid-public-key` | app-server key the browser needs to subscribe |
-| POST | `/register` | body = PushSubscription JSON |
+| GET | `/vapid-public-key` | app server key the browser needs to subscribe |
+| POST | `/register` | body = `PushSubscription` JSON |
 | POST | `/unregister` | body = `{ "endpoint": "..." }` |
 | GET | `/health` | `{ ok, subscriptions }` |
 
-## Notes
-- Single instance (subscriptions + watermark are in-process / a JSON file). Fine for one
-  small deployment.
-- On first successful poll it sets a baseline and does **not** notify pre-existing alarms;
-  only alarms created afterward push.
-- Expired subscriptions (browser returns 404/410) are pruned automatically.
+## Deployment
+
+See [DEPLOY.md](DEPLOY.md) for the full production setup (Docker, Kong routing, state
+persistence, HTTPS requirements). In short: the service runs as a container on Kong's
+internal network with no host port published, and is routed same-origin with ThingsBoard
+so the PWA's calls need no CORS handling. Pushing to `main` triggers the GitHub Actions
+workflow in [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which pulls and
+rebuilds the container automatically.
+
+## Project structure
+
+```
+main.py                       Flask app + VAPID + subscription store + ThingsBoard watcher
+requirements.txt              Python dependencies
+Dockerfile                    python:3.13-slim + gunicorn (single worker)
+docker-compose.pushbridge.yml Container on Kong's network, state bind-mounted
+deploy.sh                     Pull + rebuild, run on the host by the deploy workflow
+pushbridge.service            systemd unit — alternative for hosts without Docker
+.env.example                  All configuration, documented
+```
