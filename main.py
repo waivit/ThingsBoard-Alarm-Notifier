@@ -55,10 +55,12 @@ app = Flask(__name__)
 # --------------------------------------------------------------------------- VAPID
 def load_or_create_vapid() -> tuple[Vapid02, str]:
     """Return (vapid, application_server_key_base64url). Persists the private key."""
-    vapid = Vapid02()
     if VAPID_KEY_FILE.exists():
-        vapid.from_file(str(VAPID_KEY_FILE))
+        # from_file is a classmethod returning a NEW instance — calling it on an
+        # existing one silently leaves that instance without a key.
+        vapid = Vapid02.from_file(str(VAPID_KEY_FILE))
     else:
+        vapid = Vapid02()
         vapid.generate_keys()
         vapid.save_key(str(VAPID_KEY_FILE))
         print(f"[vapid] generated new key -> {VAPID_KEY_FILE}")
@@ -66,6 +68,9 @@ def load_or_create_vapid() -> tuple[Vapid02, str]:
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
     )
     app_server_key = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    # Log the key on every start: if this value ever changes, the persisted key was
+    # lost and every existing browser subscription just became invalid.
+    print(f"[vapid] app server key {app_server_key[:12]}…")
     return vapid, app_server_key
 
 
