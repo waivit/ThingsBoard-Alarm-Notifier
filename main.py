@@ -8,7 +8,10 @@ Flow:
      NEW alarm appears sends a Web Push to every registered subscription.
 
 Served behind Kong under /pwa_push (strip_path=true), so this app sees /register,
-/unregister, /vapid-public-key at the root.
+/unregister, /vapid-public-key, /track at the root.
+
+  3. /track records PWA usage (app opens, page views) as telemetry on a
+     ThingsBoard "PWA Usage" device.
 
 Run:  gunicorn --workers 1 --threads 4 main:app    (production, see Dockerfile)
       python main.py                               (local development)
@@ -37,6 +40,8 @@ TB_USER = os.environ.get("TB_USER", "")
 TB_PASS = os.environ.get("TB_PASS", "")
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "20"))
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@nonthaburi.info")
+# Access token of the "PWA Usage" device; empty disables /track.
+USAGE_DEVICE_TOKEN = os.environ.get("USAGE_DEVICE_TOKEN", "")
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", ".")).resolve()
 SUBS_FILE = DATA_DIR / "subscriptions.json"
@@ -123,6 +128,85 @@ def unregister():
             del SUBS[endpoint]
             save_subs(SUBS)
     return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------- usage tracking
+# The PWA reports app opens and page views here; each one is stored as telemetry on the
+# "PWA Usage" device via its access token, so the watcher's account stays read-only.
+_user_cache: dict[str, tuple[str, float]] = {}  # bearer token -> (email, cached_until)
+_user_cache_lock = threading.Lock()
+_ts_lock = threading.Lock()
+_last_ts = 0
+USER_CACHE_SECONDS = 600
+
+
+def _user_for_token(token: str) -> str | None:
+    """Validate a ThingsBoard JWT by asking TB who it belongs to. Cached briefly."""
+    now = time.time()
+    with _user_cache_lock:
+        hit = _user_cache.get(token)
+        if hit and hit[1] > now:
+            return hit[0]
+    try:
+        r = requests.get(
+            f"{TB_HOST}/api/auth/user", headers={"X-Authorization": f"Bearer {token}"}, timeout=10
+        )
+    except requests.RequestException:
+        return None
+    if r.status_code != 200:
+        return None
+    email = r.json().get("email", "")
+    with _user_cache_lock:
+        # Drop expired entries so the cache cannot grow without bound.
+        for k in [k for k, (_, until) in _user_cache.items() if until <= now]:
+            del _user_cache[k]
+        _user_cache[token] = (email, now + USER_CACHE_SECONDS)
+    return email
+
+
+def _next_ts() -> int:
+    """Strictly increasing ms timestamp: two events in the same ms would overwrite."""
+    global _last_ts
+    with _ts_lock:
+        _last_ts = max(int(time.time() * 1000), _last_ts + 1)
+        return _last_ts
+
+
+def _client_ip() -> str:
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.headers.get("X-Real-IP", "") or (request.remote_addr or "")
+
+
+@app.post("/track")
+def track():
+    if not USAGE_DEVICE_TOKEN:
+        return "", 204  # tracking not configured; push keeps working
+    auth = request.headers.get("X-Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    user = _user_for_token(token) if token else None
+    if user is None:
+        return jsonify({"ok": False}), 401
+    body = request.get_json(force=True, silent=True) or {}
+    values = {
+        "event": str(body.get("event", ""))[:40],
+        "page": str(body.get("page", ""))[:200],
+        "deviceId": str(body.get("deviceId", ""))[:64],
+        "user": user,
+        "ip": _client_ip(),
+        "ua": request.headers.get("User-Agent", "")[:300],
+    }
+    try:
+        requests.post(
+            f"{TB_HOST}/api/v1/{USAGE_DEVICE_TOKEN}/telemetry",
+            json={"ts": _next_ts(), "values": values},
+            timeout=10,
+        ).raise_for_status()
+    except requests.RequestException as e:
+        print(f"[track] telemetry failed: {e}")
+        return jsonify({"ok": False}), 502
+    return "", 204
 
 
 @app.get("/health")
