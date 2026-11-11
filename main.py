@@ -20,6 +20,7 @@ Config via environment / .env — see .env.example.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import threading
@@ -40,6 +41,8 @@ TB_USER = os.environ.get("TB_USER", "")
 TB_PASS = os.environ.get("TB_PASS", "")
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "20"))
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@nonthaburi.info")
+# Shared secret the PWA's deploy workflow sends to /announce-update; empty disables it.
+ANNOUNCE_KEY = os.environ.get("ANNOUNCE_KEY", "")
 # Access token of the "PWA Usage" device; empty disables /track.
 USAGE_DEVICE_TOKEN = os.environ.get("USAGE_DEVICE_TOKEN", "")
 
@@ -207,6 +210,34 @@ def track():
         print(f"[track] telemetry failed: {e}")
         return jsonify({"ok": False}), 502
     return "", 204
+
+
+# --------------------------------------------------------------------------- update announce
+@app.post("/announce-update")
+def announce_update():
+    """Called by the PWA deploy workflow: tell every subscriber a new version is out.
+
+    Opening the app from the notification makes it find the new build and show the
+    blocking update screen.
+    """
+    key = request.headers.get("X-Announce-Key", "")
+    if not ANNOUNCE_KEY or not hmac.compare_digest(key, ANNOUNCE_KEY):
+        return jsonify({"ok": False}), 403
+    # Sent off-thread so the workflow's request is not held open for every push.
+    threading.Thread(
+        target=send_push,
+        args=(
+            {
+                "title": "มีเวอร์ชันใหม่",
+                "body": "แตะเพื่อเปิดแอปและอัปเดต",
+                "url": "/pwa_app/",
+                # One tag for all announcements: a newer one replaces an unread older one.
+                "tag": "app-update",
+            },
+        ),
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "subscriptions": len(SUBS)})
 
 
 @app.get("/health")
